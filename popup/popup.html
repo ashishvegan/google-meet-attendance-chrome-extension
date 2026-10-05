@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Meet Attendance Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-wrapper">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <rect width="24" height="24" rx="6" fill="url(#brand-grad)" />
+            <path d="M7 12L10.5 15.5L17 9" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="brand-grad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#10B981" />
+                <stop offset="1" stop-color="#059669" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <span class="live-dot" id="header-status-dot"></span>
+        </div>
+        <div class="brand-text">
+          <h1>Meet Tracker</h1>
+          <span class="brand-subtitle" id="meeting-code-badge">No active meeting</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="btn-refresh" title="Refresh data">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="live">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><polyline points="17 11 19 13 23 9"></polyline></svg>
+        Live Call
+      </button>
+      <button class="nav-tab" data-tab="sheets">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+        Google Sheets
+      </button>
+      <button class="nav-tab" data-tab="history">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        History
+      </button>
+    </nav>
+
+    <!-- TAB 1: LIVE CALL -->
+    <section class="tab-content active" id="tab-live">
+      <!-- Quick Metric Cards -->
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value text-emerald" id="live-active-count">0</div>
+          <div class="stat-label">In Call Now</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-indigo" id="live-total-count">0</div>
+          <div class="stat-label">Total Logged</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-cyan" id="live-meeting-duration">00:00</div>
+          <div class="stat-label">Elapsed</div>
+        </div>
+      </div>
+
+      <!-- Live Participant List -->
+      <div class="section-title-row">
+        <h2>Attendees</h2>
+        <span class="count-pill" id="attendees-count-pill">0 participants</span>
+      </div>
+
+      <div class="participant-scroll-area" id="participant-list">
+        <div class="empty-state">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 6v6l4 2"></path>
+          </svg>
+          <p>No meeting in progress</p>
+          <small>Open Google Meet (meet.google.com) to automatically track attendance.</small>
+        </div>
+      </div>
+
+      <!-- Footer Action Buttons -->
+      <div class="bottom-actions">
+        <button class="btn btn-outline" id="btn-export-csv">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          Export CSV
+        </button>
+        <button class="btn btn-primary" id="btn-sync-sheets">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          Sync to Sheets
+        </button>
+      </div>
+    </section>
+
+    <!-- TAB 2: GOOGLE SHEETS SETUP -->
+    <section class="tab-content" id="tab-sheets">
+      <div class="sheet-config-card">
+        <div class="card-header">
+          <div class="card-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>
+          </div>
+          <div>
+            <h3>Google Spreadsheet Webhook</h3>
+            <p>Connect your spreadsheet to log IN/OUT events automatically.</p>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="webhook-url-input">Apps Script Web App URL</label>
+          <div class="input-with-action">
+            <input type="text" id="webhook-url-input" placeholder="https://script.google.com/macros/s/.../exec" spellcheck="false">
+            <button class="input-action-btn" id="btn-paste-webhook" title="Paste from clipboard">Paste</button>
+          </div>
+          <small class="field-hint">Paste the Web App URL deployed from your Google Sheet.</small>
+        </div>
+
+        <div class="toggle-group">
+          <div>
+            <label class="toggle-title" for="auto-sync-toggle">Auto-save on Join & Leave</label>
+            <span class="toggle-desc">Automatically sends attendance data whenever an invitee joins or exits.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="auto-sync-toggle" checked>
+            <span class="slider round"></span>
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btn-test-webhook">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            Test Connection
+          </button>
+          <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+        </div>
+
+        <div class="status-banner" id="webhook-status-banner">
+          Checking connection...
+        </div>
+      </div>
+
+      <!-- Suggested Columns Reference Card -->
+      <div class="columns-guide-card">
+        <div class="guide-header">
+          <span class="guide-tag">RECOMMENDED SCHEMA</span>
+          <h4>Google Sheet Header Columns</h4>
+        </div>
+        <p class="guide-desc">
+          The provided Google Apps Script automatically builds and formats these columns for you into <strong>Attendance Summary</strong> and <strong>Activity Log</strong> tabs:
+        </p>
+
+        <div class="sheet-preview-box">
+          <div class="sheet-tab-label">Tab 1: Attendance Summary (Consolidated Roster)</div>
+          <div class="chip-container">
+            <span class="chip">Participant Name</span>
+            <span class="chip" style="color: #38BDF8; border-color: rgba(56, 189, 248, 0.4);">Participant Email</span>
+            <span class="chip">Meeting Code</span>
+            <span class="chip">Date</span>
+            <span class="chip">First Joined Time</span>
+            <span class="chip">Last Left Time</span>
+            <span class="chip">Total Time (Mins)</span>
+            <span class="chip">Total Time (HH:MM:SS)</span>
+            <span class="chip">Join Count</span>
+            <span class="chip">Current Status</span>
+          </div>
+        </div>
+
+        <div class="sheet-preview-box" style="margin-top: 10px;">
+          <div class="sheet-tab-label">Tab 2: Activity Log (Every Join / Leave Event)</div>
+          <div class="chip-container">
+            <span class="chip">Timestamp</span>
+            <span class="chip">Meeting Code</span>
+            <span class="chip">Participant Name</span>
+            <span class="chip" style="color: #38BDF8; border-color: rgba(56, 189, 248, 0.4);">Participant Email</span>
+            <span class="chip">Event (JOINED / LEFT)</span>
+            <span class="chip">Event Time</span>
+            <span class="chip">Session Duration</span>
+            <span class="chip">Cumulative Total Time</span>
+            <span class="chip">Remarks</span>
+          </div>
+        </div>
+
+        <button class="btn btn-secondary full-width" id="btn-copy-columns-csv">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          Copy Column Headers (CSV)
+        </button>
+      </div>
+    </section>
+
+    <!-- TAB 3: HISTORY -->
+    <section class="tab-content" id="tab-history">
+      <div class="section-title-row">
+        <h2>Past Meetings</h2>
+        <button class="btn-link" id="btn-clear-history">Clear</button>
+      </div>
+
+      <div class="history-list" id="history-container">
+        <div class="empty-state">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="1.5">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+          <p>No meeting history yet</p>
+          <small>Completed Google Meet sessions will appear here.</small>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

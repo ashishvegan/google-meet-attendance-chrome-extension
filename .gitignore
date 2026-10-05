@@ -1,0 +1,15 @@
+# Sensitive keys and URLs
+keys.txt
+*.key
+*.env
+.env*
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
