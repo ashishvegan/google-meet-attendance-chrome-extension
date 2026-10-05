@@ -1,12 +1,11 @@
 /**
  * =========================================================================================
- * GOOGLE MEET ATTENDANCE & IN/OUT AUTOMATION SCRIPT (v1.1.0)
+ * GOOGLE MEET ATTENDANCE & IN/OUT AUTOMATION SCRIPT
  * =========================================================================================
  * 
  * Features:
- * - Records IN & OUT timestamps immediately when invitees join or leave.
- * - Captures Participant Name AND Participant Email (when exposed by Google Meet).
- * - Tracks session duration and cumulative total time in call.
+ * - Automatically records IN & OUT timestamps when participants join or leave.
+ * - Accurately calculates session duration and total active time.
  * - Dual sheet tabs:
  *   1. "Attendance Summary": Consolidated row per participant (updates live).
  *   2. "Activity Log": Real-time audit trail of every JOINED and LEFT event.
@@ -18,7 +17,6 @@ const LOG_SHEET_NAME = "Activity Log";
 
 const SUMMARY_HEADERS = [
   "Participant Name",
-  "Participant Email",
   "Meeting Code",
   "Meeting Title",
   "Date",
@@ -36,7 +34,6 @@ const LOG_HEADERS = [
   "Meeting Code",
   "Meeting Title",
   "Participant Name",
-  "Participant Email",
   "Event Type",
   "Event Time",
   "Session Duration",
@@ -110,7 +107,6 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
   const meetingCode = data.meetingCode || "Unknown";
   const meetingTitle = data.meetingTitle || meetingCode;
   const participantName = data.name ? data.name.trim() : "Guest";
-  const participantEmail = data.email ? data.email.trim() : "-";
   const eventType = data.event || "UPDATE";
   const eventTime = data.eventTime || formatDateTime(new Date());
   const dateStr = data.date || formatDate(new Date());
@@ -129,7 +125,6 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
     meetingCode,
     meetingTitle,
     participantName,
-    participantEmail,
     eventType,
     eventTime,
     eventType === "JOINED" ? "-" : sessionDuration,
@@ -139,7 +134,7 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
 
   // Color code the event cell
   const lastLogRow = logSheet.getLastRow();
-  const eventCell = logSheet.getRange(lastLogRow, 6);
+  const eventCell = logSheet.getRange(lastLogRow, 5);
   if (eventType === "JOINED") {
     eventCell.setBackground("#E8F5E9").setFontColor("#1B5E20").setFontWeight("bold");
   } else if (eventType === "LEFT") {
@@ -153,7 +148,7 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
 
   for (let i = 1; i < values.length; i++) {
     const rowName = values[i][0] ? values[i][0].toString().trim() : "";
-    const rowCode = values[i][2] ? values[i][2].toString().trim() : (values[i][1] ? values[i][1].toString().trim() : "");
+    const rowCode = values[i][1] ? values[i][1].toString().trim() : "";
     if (rowName.toLowerCase() === participantName.toLowerCase() && (rowCode === meetingCode || rowCode === "")) {
       foundRowIndex = i + 1;
       break;
@@ -163,14 +158,10 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
   const nowFormatted = formatDateTime(new Date());
 
   if (foundRowIndex > 0) {
-    const existingEmail = (values[foundRowIndex - 1][1] && values[foundRowIndex - 1][1] !== "-") 
-      ? values[foundRowIndex - 1][1] 
-      : participantEmail;
-    const existingFirstJoin = values[foundRowIndex - 1][5] || firstJoinedTime;
+    const existingFirstJoin = values[foundRowIndex - 1][4] || firstJoinedTime;
 
     summarySheet.getRange(foundRowIndex, 1, 1, SUMMARY_HEADERS.length).setValues([[
       participantName,
-      existingEmail,
       meetingCode,
       meetingTitle,
       dateStr,
@@ -183,7 +174,7 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
       nowFormatted
     ]]);
 
-    const statusCell = summarySheet.getRange(foundRowIndex, 11);
+    const statusCell = summarySheet.getRange(foundRowIndex, 10);
     if (status === "In Call") {
       statusCell.setBackground("#E8F5E9").setFontColor("#1B5E20").setFontWeight("bold");
     } else {
@@ -192,7 +183,6 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
   } else {
     summarySheet.appendRow([
       participantName,
-      participantEmail,
       meetingCode,
       meetingTitle,
       dateStr,
@@ -206,7 +196,7 @@ function processAttendanceEvent(ss, summarySheet, logSheet, data) {
     ]);
 
     const newRow = summarySheet.getLastRow();
-    const statusCell = summarySheet.getRange(newRow, 11);
+    const statusCell = summarySheet.getRange(newRow, 10);
     if (status === "In Call") {
       statusCell.setBackground("#E8F5E9").setFontColor("#1B5E20").setFontWeight("bold");
     }
@@ -219,15 +209,12 @@ function getOrCreateSheet(ss, sheetName, headers) {
     sheet = ss.insertSheet(sheetName);
   }
 
-  // Check if headers need updating
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
     formatHeaderRow(sheet, headers.length);
   } else {
-    // If sheet has old headers without "Participant Email", update header row
     const firstRowValues = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    if (headers.length > firstRowValues.length || firstRowValues[1] !== headers[1]) {
-      // Refresh header row
+    if (headers.length !== firstRowValues.length || firstRowValues[1] !== headers[1]) {
       sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
       formatHeaderRow(sheet, headers.length);
     }

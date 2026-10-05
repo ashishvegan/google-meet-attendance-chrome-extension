@@ -14,17 +14,16 @@ Our automation organizes your spreadsheet into **two purpose-built sheets**:
 | Column # | Suggested Header Column Name | Description | Example Data |
 | :--- | :--- | :--- | :--- |
 | **A** | **`Participant Name`** | Full name of the invitee | `Ashish Labade` |
-| **B** | **`Participant Email`** | Email address (captured from Google Meet / Workspace) | `ashish@example.com` |
-| **C** | **`Meeting Code`** | Google Meet call code | `abc-defg-hij` |
-| **D** | **`Meeting Title`** | Meeting subject / title | `Daily Standup & Sync` |
-| **E** | **`Date`** | Date of the session (`YYYY-MM-DD`) | `2026-10-05` |
-| **F** | **`First Joined Time`** | When the person first entered | `09:00:15 AM` |
-| **G** | **`Last Left Time`** | When they finally exited (or `-` if in call) | `10:02:40 AM` |
-| **H** | **`Total Time (Mins)`** | Total duration in decimal minutes | `62.4` |
-| **I** | **`Total Time (HH:MM:SS)`** | Formatted duration | `01:02:25` |
-| **J** | **`Join Count`** | How many times they re-joined | `1` (or `2` if reconnected) |
-| **K** | **`Current Status`** | Active status in call | `In Call` or `Left` |
-| **L** | **`Last Updated`** | Timestamp of last sync event | `2026-10-05 10:02:40` |
+| **B** | **`Meeting Code`** | Google Meet call code | `abc-defg-hij` |
+| **C** | **`Meeting Title`** | Meeting subject / title | `Daily Standup & Sync` |
+| **D** | **`Date`** | Date of the session (`YYYY-MM-DD`) | `2026-10-05` |
+| **E** | **`First Joined Time`** | When the person first entered | `09:00:15 AM` |
+| **F** | **`Last Left Time`** | When they finally exited (or `-` if in call) | `10:02:40 AM` |
+| **G** | **`Total Time (Mins)`** | Total duration in decimal minutes | `62.4` |
+| **H** | **`Total Time (HH:MM:SS)`** | Formatted duration | `01:02:25` |
+| **I** | **`Join Count`** | How many times they re-joined | `1` (or `2` if reconnected) |
+| **J** | **`Current Status`** | Active status in call | `In Call` or `Left` |
+| **K** | **`Last Updated`** | Timestamp of last sync event | `2026-10-05 10:02:40` |
 
 ---
 
@@ -37,12 +36,11 @@ Our automation organizes your spreadsheet into **two purpose-built sheets**:
 | **B** | **`Meeting Code`** | Call code | `abc-defg-hij` |
 | **C** | **`Meeting Title`** | Meeting subject | `Team Sync` |
 | **D** | **`Participant Name`** | Name of invitee | `John Doe` |
-| **E** | **`Participant Email`** | Email address | `john@example.com` |
-| **F** | **`Event Type`** | Action (`JOINED` / `LEFT`) | `JOINED` / `LEFT` |
-| **G** | **`Event Time`** | Local time of the event | `09:00:15 AM` |
-| **H** | **`Session Duration`** | Duration of this specific stay | `00:00:10` (or `-` on join) |
-| **I** | **`Total Cumulative Time`** | Total accumulated time in call | `00:00:10` |
-| **J** | **`Remarks`** | Context note | `First Joined` / `Left meeting` |
+| **E** | **`Event Type`** | Action (`JOINED` / `LEFT`) | `JOINED` / `LEFT` |
+| **F** | **`Event Time`** | Local time of the event | `09:00:15 AM` |
+| **G** | **`Session Duration`** | Duration of this specific stay | `00:00:10` (or `-` on join) |
+| **H** | **`Total Cumulative Time`** | Total accumulated time in call | `00:00:10` |
+| **I** | **`Remarks`** | Context note | `First Joined` / `Left meeting` |
 
 > 💡 **Good News**: You don't need to manually type or format these headers! The included Google Apps Script will **automatically generate, format, color-code, and freeze both header rows** the first time an event is received!
 

@@ -1,7 +1,6 @@
 /**
- * Google Meet Attendance & IN/OUT Tracker - Content Script (v1.2.0)
- * Real-time participant tracking with fast detection, multi-source email extraction,
- * chat-based email listener, roster mapping, and automated Google Sheets sync.
+ * Google Meet Attendance & IN/OUT Tracker - Content Script
+ * Real-time participant tracking with fast detection and automated Google Sheets sync.
  */
 
 (() => {
@@ -11,44 +10,31 @@
   const GRACE_CYCLES = 2;              // 2 cycles (~3s) before marking LEFT
   const STORAGE_KEY_SESSIONS = 'gmeet_attendance_sessions';
   const STORAGE_KEY_SETTINGS = 'gmeet_attendance_settings';
-  const STORAGE_KEY_ROSTER = 'gmeet_email_roster';
 
   // State
   let meetingCode = getMeetingCode();
   let meetingTitle = getCleanTitle();
   let attendees = new Map(); // key: normalized name, value: attendee object
-  let emailRoster = {};      // key: normalized name, value: email
   let isMeetingActive = false;
   let scanTimer = null;
   let clockTimer = null;
   let meetingStartTime = null;
   let settings = { webhookUrl: DEFAULT_WEBHOOK_URL, autoSync: true };
 
-  // Load Settings & Roster
-  chrome.storage.local.get([STORAGE_KEY_SETTINGS, STORAGE_KEY_ROSTER], (res) => {
+  // Load Settings
+  chrome.storage.local.get([STORAGE_KEY_SETTINGS], (res) => {
     if (res[STORAGE_KEY_SETTINGS] && res[STORAGE_KEY_SETTINGS].webhookUrl) {
       settings = Object.assign(settings, res[STORAGE_KEY_SETTINGS]);
     } else {
       chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: settings });
     }
-
-    if (res[STORAGE_KEY_ROSTER]) {
-      emailRoster = res[STORAGE_KEY_ROSTER];
-    }
-
     updateWidgetStatus();
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local') {
-      if (changes[STORAGE_KEY_SETTINGS]) {
-        settings = Object.assign(settings, changes[STORAGE_KEY_SETTINGS].newValue);
-        updateWidgetStatus();
-      }
-      if (changes[STORAGE_KEY_ROSTER]) {
-        emailRoster = changes[STORAGE_KEY_ROSTER].newValue || {};
-        applyRosterToExistingAttendees();
-      }
+    if (area === 'local' && changes[STORAGE_KEY_SETTINGS]) {
+      settings = Object.assign(settings, changes[STORAGE_KEY_SETTINGS].newValue);
+      updateWidgetStatus();
     }
   });
 
@@ -114,13 +100,7 @@
     if (clockTimer) clearInterval(clockTimer);
 
     scanParticipants();
-    scanChatForEmails();
-
-    scanTimer = setInterval(() => {
-      scanParticipants();
-      scanChatForEmails();
-    }, SCAN_INTERVAL_MS);
-
+    scanTimer = setInterval(scanParticipants, SCAN_INTERVAL_MS);
     clockTimer = setInterval(updateLiveTimers, 1000);
   }
 
@@ -166,142 +146,33 @@
     return null;
   }
 
-  /**
-   * Multi-Source Email Scraper:
-   * 1. Google Workspace Hovercard / Tooltips
-   * 2. Self / Host Google Profile Button
-   * 3. Saved Invitee Email Roster
-   * 4. In-Call Chat Messages
-   */
-  function extractEmailFromElement(container, name) {
-    if (!container && !name) return '-';
-
-    // Check Roster first
-    if (name) {
-      const norm = normalizeName(name);
-      if (emailRoster[norm]) return emailRoster[norm];
-    }
-
-    if (!container) return '-';
-
-    // 1. Data attributes
-    const hovercard = container.getAttribute('data-hovercard-id') || container.querySelector('[data-hovercard-id]')?.getAttribute('data-hovercard-id');
-    if (hovercard && hovercard.includes('@')) return hovercard.trim();
-
-    const dataEmail = container.getAttribute('data-email') || container.querySelector('[data-email]')?.getAttribute('data-email');
-    if (dataEmail && dataEmail.includes('@')) return dataEmail.trim();
-
-    // 2. Mailto link
-    const mailto = container.querySelector('a[href^="mailto:"]');
-    if (mailto) {
-      return mailto.href.replace('mailto:', '').split('?')[0].trim();
-    }
-
-    // 3. Child elements with @ in title or aria-label
-    const allWithAt = container.querySelectorAll('[title*="@"], [aria-label*="@"]');
-    for (const el of allWithAt) {
-      const val = (el.getAttribute('title') || '') + ' ' + (el.getAttribute('aria-label') || '');
-      const match = val.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (match) return match[0];
-    }
-
-    // 4. Text spans with email format
-    const spans = container.querySelectorAll('span, div');
-    for (const sp of spans) {
-      const txt = sp.textContent.trim();
-      const match = txt.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/);
-      if (match) return match[0];
-    }
-
-    return '-';
-  }
-
-  function getSelfEmail() {
-    // Inspect Google account profile badge in Meet navigation
-    const candidates = document.querySelectorAll('a[aria-label*="@"], button[aria-label*="@"], div[aria-label*="@"], [data-email]');
-    for (const el of candidates) {
-      const text = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('data-email') || '');
-      const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (match) return match[0];
-    }
-    return '-';
-  }
-
-  /**
-   * Listen to Google Meet Chat for participants typing their email
-   * (e.g. "my email is user@gmail.com" or "user@gmail.com")
-   */
-  function scanChatForEmails() {
-    const chatItems = document.querySelectorAll('div[data-message-text], div[data-sender-name], div[role="listitem"]');
-    chatItems.forEach(item => {
-      const senderEl = item.querySelector('[data-sender-name], span.YTbUzc, b');
-      const sender = senderEl?.textContent?.trim() || item.getAttribute('data-sender-name');
-      const text = item.getAttribute('data-message-text') || item.textContent || '';
-
-      const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (sender && match) {
-        const foundEmail = match[0];
-        const norm = normalizeName(sender);
-        if (norm && attendees.has(norm)) {
-          const att = attendees.get(norm);
-          if (!att.email || att.email === '-') {
-            att.email = foundEmail;
-            console.log(`[Meet Attendance] Captured email from chat for ${att.name}: ${foundEmail}`);
-            dispatchAttendanceEvent('UPDATE', att);
-            updateUI();
-          }
-        }
-      }
-    });
-  }
-
-  function applyRosterToExistingAttendees() {
-    attendees.forEach((att, norm) => {
-      if (emailRoster[norm] && (!att.email || att.email === '-')) {
-        att.email = emailRoster[norm];
-        dispatchAttendanceEvent('UPDATE', att);
-      }
-    });
-    updateUI();
-  }
-
-  function scrapeCurrentParticipants() {
-    const map = new Map();
+  function scrapeCurrentParticipantNames() {
+    const names = new Set();
 
     function isVisible(el) {
       if (!el) return false;
       return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     }
 
-    // 1. People Tab
+    // 1. People Tab List
     const peopleItems = document.querySelectorAll('div[role="tabpanel"] div[role="listitem"], [aria-label="People"] div[role="listitem"], [aria-label="Participants"] div[role="listitem"]');
     peopleItems.forEach((item) => {
       if (!isVisible(item)) return;
 
       const spans = item.querySelectorAll('span');
-      let name = '';
       for (const span of spans) {
         const txt = span.textContent.trim();
         if (txt && !txt.includes('(') && !txt.includes(')') && txt.length > 1 && txt.length < 50) {
           if (!['Pin', 'Mute', 'Remove', 'Add', 'People', 'Chat', 'Meeting host', 'Host'].includes(txt)) {
-            name = txt;
+            names.add(txt);
             break;
           }
         }
       }
-
-      if (name && name !== 'You') {
-        let email = extractEmailFromElement(item, name);
-        const norm = normalizeName(name);
-        if (norm) {
-          if (email === '-' && emailRoster[norm]) email = emailRoster[norm];
-          map.set(norm, { name, email });
-        }
-      }
     });
 
-    // 2. Video Tiles
-    if (map.size === 0) {
+    // 2. Video Tiles (if People panel is not open)
+    if (names.size === 0) {
       const tileSpans = document.querySelectorAll('div[data-self-name], [data-requested-participant-id], div[data-participant-id]');
       tileSpans.forEach(el => {
         if (!isVisible(el)) return;
@@ -318,12 +189,7 @@
         if (name) {
           name = name.replace(/\s*\(You\)\s*/i, '').trim();
           if (name && name !== 'You' && name.length > 1 && !name.includes('\n') && !name.toLowerCase().includes('left the meeting')) {
-            const norm = normalizeName(name);
-            if (norm && !map.has(norm)) {
-              let email = extractEmailFromElement(el, name);
-              if (email === '-' && emailRoster[norm]) email = emailRoster[norm];
-              map.set(norm, { name, email });
-            }
+            names.add(name);
           }
         }
       });
@@ -334,32 +200,30 @@
     if (myNameEl) {
       const myName = myNameEl.getAttribute('data-self-name')?.replace(/\s*\(You\)\s*/i, '').trim();
       if (myName && myName !== 'You') {
-        const norm = normalizeName(myName);
-        if (norm && !map.has(norm)) {
-          let selfEmail = getSelfEmail();
-          if (selfEmail === '-' && emailRoster[norm]) selfEmail = emailRoster[norm];
-          map.set(norm, { name: myName, email: selfEmail });
-        }
+        names.add(myName);
       }
     }
 
-    return map;
+    return Array.from(names);
   }
 
   function scanParticipants() {
     if (!isMeetingActive) return;
 
-    const currentMap = scrapeCurrentParticipants();
+    const visibleNames = scrapeCurrentParticipantNames();
     const now = new Date();
     const nowMs = now.getTime();
+    const currentNameSet = new Set(visibleNames.map(normalizeName));
     const officialCount = getOfficialMeetParticipantCount();
 
     // 1. Process Active Participants
-    currentMap.forEach((info, norm) => {
+    visibleNames.forEach(rawName => {
+      const norm = normalizeName(rawName);
+      if (!norm) return;
+
       if (!attendees.has(norm)) {
         const newAttendee = {
-          name: info.name,
-          email: info.email || '-',
+          name: rawName,
           firstJoined: now,
           firstJoinedTimeStr: formatTime(now),
           lastLeftTimeStr: '-',
@@ -372,18 +236,12 @@
         };
         attendees.set(norm, newAttendee);
 
-        console.log(`[Meet Attendance] JOINED: ${info.name} | Email: ${newAttendee.email}`);
+        console.log(`[Meet Attendance] JOINED: ${rawName} at ${newAttendee.firstJoinedTimeStr}`);
         dispatchAttendanceEvent('JOINED', newAttendee);
       } else {
         const att = attendees.get(norm);
         att.lastSeenMs = nowMs;
         att.missedCycles = 0;
-
-        // Upgrade email if discovered late
-        if (info.email && info.email !== '-' && (!att.email || att.email === '-')) {
-          att.email = info.email;
-          dispatchAttendanceEvent('UPDATE', att);
-        }
 
         if (att.status === 'OUT') {
           att.status = 'IN';
@@ -397,7 +255,7 @@
 
     // 2. Process Missing Participants
     attendees.forEach((att, norm) => {
-      if (!currentMap.has(norm)) {
+      if (!currentNameSet.has(norm)) {
         if (att.status === 'IN') {
           att.missedCycles = (att.missedCycles || 0) + 1;
 
@@ -406,7 +264,7 @@
           attendees.forEach(a => { if (a.status === 'IN') currentlyInCount++; });
 
           if (officialCount !== null && officialCount < currentlyInCount) {
-            threshold = 1;
+            threshold = 1; // Instant leave detection!
           }
 
           if (att.missedCycles >= threshold) {
@@ -428,7 +286,7 @@
     att.totalDurationMs += sessionDurationMs;
     att.currentSessionStart = null;
 
-    console.log(`[Meet Attendance] LEFT: ${att.name} (${att.email}) | Stayed: ${formatDuration(sessionDurationMs)}`);
+    console.log(`[Meet Attendance] LEFT: ${att.name} | Stayed: ${formatDuration(sessionDurationMs)} | Total: ${formatDuration(att.totalDurationMs)}`);
     dispatchAttendanceEvent('LEFT', att, sessionDurationMs);
   }
 
@@ -440,7 +298,6 @@
       meetingCode: meetingCode || 'Meet',
       meetingTitle: meetingTitle || meetingCode,
       name: attendee.name,
-      email: attendee.email || '-',
       event: eventType,
       eventTime: formatDateTime(now),
       date: formatDate(now),
@@ -452,7 +309,7 @@
       joinCount: attendee.joinCount,
       remarks: eventType === 'JOINED' 
         ? (attendee.joinCount > 1 ? `Rejoined (Session #${attendee.joinCount})` : 'First Joined')
-        : (eventType === 'LEFT' ? `Left meeting after ${formatDuration(sessionDurationMs)}` : 'Email / Details Updated')
+        : `Left meeting after ${formatDuration(sessionDurationMs)}`
     };
 
     chrome.runtime.sendMessage({
@@ -476,7 +333,6 @@
       const currentTotalMs = att.totalDurationMs + (att.status === 'IN' && att.currentSessionStart ? (now.getTime() - att.currentSessionStart) : 0);
       records.push({
         name: att.name,
-        email: att.email || '-',
         firstJoined: att.firstJoinedTimeStr,
         lastLeft: att.lastLeftTimeStr,
         status: att.status,
@@ -708,7 +564,6 @@
       const initial = att.name.charAt(0).toUpperCase() || '?';
       const currentTotalMs = att.totalDurationMs + (isIn && att.currentSessionStart ? (now - att.currentSessionStart) : 0);
       const durationStr = formatDuration(currentTotalMs);
-      const emailDisplay = (att.email && att.email !== '-') ? `<div style="font-size: 9px; color: #38BDF8;">${escapeHtml(att.email)}</div>` : '';
 
       html += `
         <div class="gmat-user-item">
@@ -716,7 +571,6 @@
             <div class="gmat-avatar-circle" style="background: ${getAvatarColor(att.name)}">${initial}</div>
             <div class="gmat-user-details">
               <span class="gmat-user-name" title="${escapeHtml(att.name)}">${escapeHtml(att.name)}</span>
-              ${emailDisplay}
               <span class="gmat-user-times">In: ${att.firstJoinedTimeStr}${att.status === 'OUT' ? ` • Out: ${att.lastLeftTimeStr}` : ''}</span>
             </div>
           </div>
@@ -770,7 +624,6 @@
     const now = new Date();
     const headers = [
       'Participant Name',
-      'Participant Email',
       'Meeting Code',
       'Date',
       'First Joined Time',
@@ -790,7 +643,6 @@
 
       const row = [
         `"${att.name.replace(/"/g, '""')}"`,
-        `"${(att.email || '-').replace(/"/g, '""')}"`,
         `"${meetingCode}"`,
         `"${formatDate(now)}"`,
         `"${att.firstJoinedTimeStr}"`,
@@ -812,7 +664,6 @@
     document.body.removeChild(link);
   }
 
-  // --- Helper Functions ---
   function normalizeName(name) {
     if (!name) return '';
     return name.trim().toLowerCase().replace(/\s+/g, ' ');
