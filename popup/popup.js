@@ -5,6 +5,7 @@
 const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwqHSwl3qRdpySNsUOs8WsTmd-UoMKakrTrvpm5UUkqdg5GeomincEShu7l3GDUk2PA/exec';
 const STORAGE_KEY_SETTINGS = 'gmeet_attendance_settings';
 const STORAGE_KEY_SESSIONS = 'gmeet_attendance_sessions';
+const STORAGE_KEY_ROSTER = 'gmeet_email_roster';
 
 document.addEventListener('DOMContentLoaded', () => {
   // DOM Elements - Tabs
@@ -34,6 +35,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const webhookStatusBanner = document.getElementById('webhook-status-banner');
   const btnCopyColumnsCsv = document.getElementById('btn-copy-columns-csv');
 
+  // DOM Elements - Tab Roster
+  const rosterTextarea = document.getElementById('roster-textarea');
+  const btnSaveRoster = document.getElementById('btn-save-roster');
+  const rosterStatusBanner = document.getElementById('roster-status-banner');
+
   // DOM Elements - Tab History
   const historyContainer = document.getElementById('history-container');
   const btnClearHistory = document.getElementById('btn-clear-history');
@@ -59,8 +65,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Load Settings
-  chrome.storage.local.get([STORAGE_KEY_SETTINGS], (res) => {
+  // Load Settings and Roster
+  chrome.storage.local.get([STORAGE_KEY_SETTINGS, STORAGE_KEY_ROSTER], (res) => {
     const settings = res[STORAGE_KEY_SETTINGS] || {};
     webhookUrlInput.value = settings.webhookUrl || DEFAULT_WEBHOOK_URL;
     if (settings.autoSync !== undefined) autoSyncToggle.checked = settings.autoSync;
@@ -71,6 +77,41 @@ document.addEventListener('DOMContentLoaded', () => {
         [STORAGE_KEY_SETTINGS]: { webhookUrl: DEFAULT_WEBHOOK_URL, autoSync: true }
       });
     }
+
+    // Populate Roster Textarea
+    const roster = res[STORAGE_KEY_ROSTER] || {};
+    const lines = [];
+    for (const [name, email] of Object.entries(roster)) {
+      lines.push(`${name}, ${email}`);
+    }
+    if (lines.length > 0) {
+      rosterTextarea.value = lines.join('\n');
+    }
+  });
+
+  // Save Roster
+  btnSaveRoster.addEventListener('click', () => {
+    const raw = rosterTextarea.value.trim();
+    const roster = {};
+    if (raw) {
+      raw.split('\n').forEach(line => {
+        const parts = line.split(/[,:]/);
+        if (parts.length >= 2) {
+          const name = parts[0].trim().toLowerCase().replace(/\s+/g, ' ');
+          const email = parts.slice(1).join(':').trim();
+          if (name && email) {
+            roster[name] = email;
+          }
+        }
+      });
+    }
+
+    chrome.storage.local.set({ [STORAGE_KEY_ROSTER]: roster }, () => {
+      showBanner(rosterStatusBanner, `Saved ${Object.keys(roster).length} participant emails to directory!`, 'success');
+      setTimeout(() => {
+        rosterStatusBanner.style.display = 'none';
+      }, 3000);
+    });
   });
 
   // Save Settings

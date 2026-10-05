@@ -1,45 +1,57 @@
 /**
- * Google Meet Attendance & IN/OUT Tracker - Content Script (v1.1.0)
- * Real-time participant tracking with fast detection, email extraction, and automated Google Sheets sync.
+ * Google Meet Attendance & IN/OUT Tracker - Content Script (v1.2.0)
+ * Real-time participant tracking with fast detection, multi-source email extraction,
+ * chat-based email listener, roster mapping, and automated Google Sheets sync.
  */
 
 (() => {
   // Configuration
   const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbwqHSwl3qRdpySNsUOs8WsTmd-UoMKakrTrvpm5UUkqdg5GeomincEShu7l3GDUk2PA/exec';
-  const SCAN_INTERVAL_MS = 1500;       // Scan every 1.5 seconds for instant responsiveness
+  const SCAN_INTERVAL_MS = 1500;       // Fast 1.5s scan
   const GRACE_CYCLES = 2;              // 2 cycles (~3s) before marking LEFT
   const STORAGE_KEY_SESSIONS = 'gmeet_attendance_sessions';
   const STORAGE_KEY_SETTINGS = 'gmeet_attendance_settings';
+  const STORAGE_KEY_ROSTER = 'gmeet_email_roster';
 
   // State
   let meetingCode = getMeetingCode();
   let meetingTitle = getCleanTitle();
   let attendees = new Map(); // key: normalized name, value: attendee object
+  let emailRoster = {};      // key: normalized name, value: email
   let isMeetingActive = false;
   let scanTimer = null;
   let clockTimer = null;
   let meetingStartTime = null;
   let settings = { webhookUrl: DEFAULT_WEBHOOK_URL, autoSync: true };
 
-  // Load Settings immediately & listen for changes
-  chrome.storage.local.get([STORAGE_KEY_SETTINGS], (res) => {
+  // Load Settings & Roster
+  chrome.storage.local.get([STORAGE_KEY_SETTINGS, STORAGE_KEY_ROSTER], (res) => {
     if (res[STORAGE_KEY_SETTINGS] && res[STORAGE_KEY_SETTINGS].webhookUrl) {
       settings = Object.assign(settings, res[STORAGE_KEY_SETTINGS]);
     } else {
-      // Save default
       chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: settings });
     }
+
+    if (res[STORAGE_KEY_ROSTER]) {
+      emailRoster = res[STORAGE_KEY_ROSTER];
+    }
+
     updateWidgetStatus();
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[STORAGE_KEY_SETTINGS]) {
-      settings = Object.assign(settings, changes[STORAGE_KEY_SETTINGS].newValue);
-      updateWidgetStatus();
+    if (area === 'local') {
+      if (changes[STORAGE_KEY_SETTINGS]) {
+        settings = Object.assign(settings, changes[STORAGE_KEY_SETTINGS].newValue);
+        updateWidgetStatus();
+      }
+      if (changes[STORAGE_KEY_ROSTER]) {
+        emailRoster = changes[STORAGE_KEY_ROSTER].newValue || {};
+        applyRosterToExistingAttendees();
+      }
     }
   });
 
-  // Listen for manual sync requests from popup
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'TRIGGER_FORCE_SYNC') {
       syncAllToSheets();
@@ -49,11 +61,8 @@
 
   function init() {
     if (!meetingCode) return;
-
     createFloatingWidget();
     checkMeetingStatus();
-
-    // Check meeting status every 1.5 seconds
     setInterval(checkMeetingStatus, 1500);
   }
 
@@ -74,7 +83,6 @@
   }
 
   function isInCall() {
-    // Indicators of being inside active call
     const leaveBtn = document.querySelector('button[aria-label*="Leave call" i], button[aria-label*="Leave" i], button[data-call-ended]');
     const micBtn = document.querySelector('button[aria-label*="turn off microphone" i], button[aria-label*="turn on microphone" i]');
     const bottomBar = document.querySelector('[data-is-muted], [role="region"][aria-label*="call controls" i]');
@@ -93,8 +101,6 @@
       console.log(`[Meet Attendance] Call started: ${meetingCode}`);
       startTracking();
       updateWidgetHeader();
-      
-      // Auto-ensure People panel is accessible
       autoEnsurePeoplePanel();
     } else if (!currentlyInCall && isMeetingActive) {
       isMeetingActive = false;
@@ -108,7 +114,13 @@
     if (clockTimer) clearInterval(clockTimer);
 
     scanParticipants();
-    scanTimer = setInterval(scanParticipants, SCAN_INTERVAL_MS);
+    scanChatForEmails();
+
+    scanTimer = setInterval(() => {
+      scanParticipants();
+      scanChatForEmails();
+    }, SCAN_INTERVAL_MS);
+
     clockTimer = setInterval(updateLiveTimers, 1000);
   }
 
@@ -127,26 +139,18 @@
     updateUI();
   }
 
-  /**
-   * Auto-open or ensure People panel so Google Meet renders the 100% accurate participant list
-   */
   function autoEnsurePeoplePanel() {
     setTimeout(() => {
       const isPeopleOpen = document.querySelector('div[role="tabpanel"] div[role="listitem"], [aria-label="People"] div[role="listitem"]');
       if (!isPeopleOpen) {
         const peopleBtn = document.querySelector('button[aria-label*="everyone" i], button[aria-label*="people" i], button[data-panel-id="1"]');
         if (peopleBtn) {
-          console.log('[Meet Attendance] Auto-opening People panel for accurate attendance scanning.');
           peopleBtn.click();
         }
       }
     }, 2000);
   }
 
-  /**
-   * Read the official participant counter displayed in Google Meet's bottom bar
-   * e.g., "Show everyone (2)" -> 2
-   */
   function getOfficialMeetParticipantCount() {
     const peopleBtn = document.querySelector('button[aria-label*="everyone" i], button[aria-label*="people" i], button[data-panel-id="1"]');
     if (!peopleBtn) return null;
@@ -163,53 +167,113 @@
   }
 
   /**
-   * Scrapes currently connected participants AND attempts to capture their Email ID
+   * Multi-Source Email Scraper:
+   * 1. Google Workspace Hovercard / Tooltips
+   * 2. Self / Host Google Profile Button
+   * 3. Saved Invitee Email Roster
+   * 4. In-Call Chat Messages
    */
-  function scrapeCurrentParticipants() {
-    const map = new Map(); // key: normalized name, value: { name, email }
+  function extractEmailFromElement(container, name) {
+    if (!container && !name) return '-';
 
-    // Helper: is element physically visible?
+    // Check Roster first
+    if (name) {
+      const norm = normalizeName(name);
+      if (emailRoster[norm]) return emailRoster[norm];
+    }
+
+    if (!container) return '-';
+
+    // 1. Data attributes
+    const hovercard = container.getAttribute('data-hovercard-id') || container.querySelector('[data-hovercard-id]')?.getAttribute('data-hovercard-id');
+    if (hovercard && hovercard.includes('@')) return hovercard.trim();
+
+    const dataEmail = container.getAttribute('data-email') || container.querySelector('[data-email]')?.getAttribute('data-email');
+    if (dataEmail && dataEmail.includes('@')) return dataEmail.trim();
+
+    // 2. Mailto link
+    const mailto = container.querySelector('a[href^="mailto:"]');
+    if (mailto) {
+      return mailto.href.replace('mailto:', '').split('?')[0].trim();
+    }
+
+    // 3. Child elements with @ in title or aria-label
+    const allWithAt = container.querySelectorAll('[title*="@"], [aria-label*="@"]');
+    for (const el of allWithAt) {
+      const val = (el.getAttribute('title') || '') + ' ' + (el.getAttribute('aria-label') || '');
+      const match = val.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (match) return match[0];
+    }
+
+    // 4. Text spans with email format
+    const spans = container.querySelectorAll('span, div');
+    for (const sp of spans) {
+      const txt = sp.textContent.trim();
+      const match = txt.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/);
+      if (match) return match[0];
+    }
+
+    return '-';
+  }
+
+  function getSelfEmail() {
+    // Inspect Google account profile badge in Meet navigation
+    const candidates = document.querySelectorAll('a[aria-label*="@"], button[aria-label*="@"], div[aria-label*="@"], [data-email]');
+    for (const el of candidates) {
+      const text = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('data-email') || '');
+      const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (match) return match[0];
+    }
+    return '-';
+  }
+
+  /**
+   * Listen to Google Meet Chat for participants typing their email
+   * (e.g. "my email is user@gmail.com" or "user@gmail.com")
+   */
+  function scanChatForEmails() {
+    const chatItems = document.querySelectorAll('div[data-message-text], div[data-sender-name], div[role="listitem"]');
+    chatItems.forEach(item => {
+      const senderEl = item.querySelector('[data-sender-name], span.YTbUzc, b');
+      const sender = senderEl?.textContent?.trim() || item.getAttribute('data-sender-name');
+      const text = item.getAttribute('data-message-text') || item.textContent || '';
+
+      const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (sender && match) {
+        const foundEmail = match[0];
+        const norm = normalizeName(sender);
+        if (norm && attendees.has(norm)) {
+          const att = attendees.get(norm);
+          if (!att.email || att.email === '-') {
+            att.email = foundEmail;
+            console.log(`[Meet Attendance] Captured email from chat for ${att.name}: ${foundEmail}`);
+            dispatchAttendanceEvent('UPDATE', att);
+            updateUI();
+          }
+        }
+      }
+    });
+  }
+
+  function applyRosterToExistingAttendees() {
+    attendees.forEach((att, norm) => {
+      if (emailRoster[norm] && (!att.email || att.email === '-')) {
+        att.email = emailRoster[norm];
+        dispatchAttendanceEvent('UPDATE', att);
+      }
+    });
+    updateUI();
+  }
+
+  function scrapeCurrentParticipants() {
+    const map = new Map();
+
     function isVisible(el) {
       if (!el) return false;
       return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     }
 
-    // Helper: extract email from element or its children
-    function extractEmail(container) {
-      if (!container) return '-';
-      // 1. Check data-hovercard-id or data-email
-      const hovercard = container.getAttribute('data-hovercard-id') || container.querySelector('[data-hovercard-id]')?.getAttribute('data-hovercard-id');
-      if (hovercard && hovercard.includes('@')) return hovercard.trim();
-
-      const dataEmail = container.getAttribute('data-email') || container.querySelector('[data-email]')?.getAttribute('data-email');
-      if (dataEmail && dataEmail.includes('@')) return dataEmail.trim();
-
-      // 2. Check mailto link
-      const mailto = container.querySelector('a[href^="mailto:"]');
-      if (mailto) {
-        return mailto.href.replace('mailto:', '').split('?')[0].trim();
-      }
-
-      // 3. Check title / aria-label containing @
-      const allWithAt = container.querySelectorAll('[title*="@"], [aria-label*="@"]');
-      for (const el of allWithAt) {
-        const val = el.getAttribute('title') || el.getAttribute('aria-label') || '';
-        const match = val.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        if (match) return match[0];
-      }
-
-      // 4. Check text content of subtitle spans
-      const spans = container.querySelectorAll('span');
-      for (const sp of spans) {
-        const txt = sp.textContent.trim();
-        const match = txt.match(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/);
-        if (match) return match[0];
-      }
-
-      return '-';
-    }
-
-    // Strategy 1: The People Tab List (100% official when open)
+    // 1. People Tab
     const peopleItems = document.querySelectorAll('div[role="tabpanel"] div[role="listitem"], [aria-label="People"] div[role="listitem"], [aria-label="Participants"] div[role="listitem"]');
     peopleItems.forEach((item) => {
       if (!isVisible(item)) return;
@@ -227,27 +291,24 @@
       }
 
       if (name && name !== 'You') {
-        const email = extractEmail(item);
+        let email = extractEmailFromElement(item, name);
         const norm = normalizeName(name);
         if (norm) {
+          if (email === '-' && emailRoster[norm]) email = emailRoster[norm];
           map.set(norm, { name, email });
         }
       }
     });
 
-    // Strategy 2: If People tab is closed, check active visible video tiles
+    // 2. Video Tiles
     if (map.size === 0) {
-      // Find visible video cards
       const tileSpans = document.querySelectorAll('div[data-self-name], [data-requested-participant-id], div[data-participant-id]');
       tileSpans.forEach(el => {
         if (!isVisible(el)) return;
-
-        // Ensure this is not an announcement toast / notification
         if (el.closest('[role="region"][aria-live], [aria-live="polite"], [role="alert"]')) return;
 
         let name = el.getAttribute('data-self-name') || '';
         if (!name) {
-          // Look for participant name span inside visible tile
           const nameSpan = el.querySelector('span[dir="auto"], span.zWGUib');
           if (nameSpan && isVisible(nameSpan)) {
             name = nameSpan.textContent.trim();
@@ -259,25 +320,25 @@
           if (name && name !== 'You' && name.length > 1 && !name.includes('\n') && !name.toLowerCase().includes('left the meeting')) {
             const norm = normalizeName(name);
             if (norm && !map.has(norm)) {
-              map.set(norm, { name, email: extractEmail(el) });
+              let email = extractEmailFromElement(el, name);
+              if (email === '-' && emailRoster[norm]) email = emailRoster[norm];
+              map.set(norm, { name, email });
             }
           }
         }
       });
     }
 
-    // Strategy 3: Check Self / Host Name
+    // 3. Self / Host
     const myNameEl = document.querySelector('[data-self-name]');
     if (myNameEl) {
       const myName = myNameEl.getAttribute('data-self-name')?.replace(/\s*\(You\)\s*/i, '').trim();
       if (myName && myName !== 'You') {
         const norm = normalizeName(myName);
         if (norm && !map.has(norm)) {
-          // Attempt to get self email from profile button
-          const selfEmailEl = document.querySelector('a[aria-label*="@"], [data-email]');
-          const selfEmail = selfEmailEl?.getAttribute('data-email') || 
-            (selfEmailEl?.getAttribute('aria-label')?.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/) ? selfEmailEl.getAttribute('aria-label').match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)[0] : '-');
-          map.set(norm, { name: myName, email: selfEmail || '-' });
+          let selfEmail = getSelfEmail();
+          if (selfEmail === '-' && emailRoster[norm]) selfEmail = emailRoster[norm];
+          map.set(norm, { name: myName, email: selfEmail });
         }
       }
     }
@@ -285,9 +346,6 @@
     return map;
   }
 
-  /**
-   * Main scan routine: executes every 1.5s
-   */
   function scanParticipants() {
     if (!isMeetingActive) return;
 
@@ -296,10 +354,9 @@
     const nowMs = now.getTime();
     const officialCount = getOfficialMeetParticipantCount();
 
-    // 1. Process Active Participants (JOINED or REJOINED)
+    // 1. Process Active Participants
     currentMap.forEach((info, norm) => {
       if (!attendees.has(norm)) {
-        // === FIRST TIME JOINED ===
         const newAttendee = {
           name: info.name,
           email: info.email || '-',
@@ -315,40 +372,41 @@
         };
         attendees.set(norm, newAttendee);
 
-        console.log(`[Meet Attendance] JOINED: ${info.name} (${newAttendee.email}) at ${newAttendee.firstJoinedTimeStr}`);
+        console.log(`[Meet Attendance] JOINED: ${info.name} | Email: ${newAttendee.email}`);
         dispatchAttendanceEvent('JOINED', newAttendee);
       } else {
         const att = attendees.get(norm);
         att.lastSeenMs = nowMs;
         att.missedCycles = 0;
+
+        // Upgrade email if discovered late
         if (info.email && info.email !== '-' && (!att.email || att.email === '-')) {
           att.email = info.email;
+          dispatchAttendanceEvent('UPDATE', att);
         }
 
         if (att.status === 'OUT') {
-          // === REJOINED ===
           att.status = 'IN';
           att.joinCount += 1;
           att.currentSessionStart = nowMs;
-          console.log(`[Meet Attendance] REJOINED: ${att.name} (Count: ${att.joinCount})`);
+          console.log(`[Meet Attendance] REJOINED: ${att.name}`);
           dispatchAttendanceEvent('JOINED', att);
         }
       }
     });
 
-    // 2. Process Missing Participants (Check for LEFT)
+    // 2. Process Missing Participants
     attendees.forEach((att, norm) => {
       if (!currentMap.has(norm)) {
         if (att.status === 'IN') {
           att.missedCycles = (att.missedCycles || 0) + 1;
 
-          // If official meet counter dropped, immediately trigger leave on first missed cycle
           let threshold = GRACE_CYCLES;
           let currentlyInCount = 0;
           attendees.forEach(a => { if (a.status === 'IN') currentlyInCount++; });
 
           if (officialCount !== null && officialCount < currentlyInCount) {
-            threshold = 1; // Instant leave detection!
+            threshold = 1;
           }
 
           if (att.missedCycles >= threshold) {
@@ -358,7 +416,6 @@
       }
     });
 
-    // Update Badge & UI
     updateBadge();
     updateUI();
     saveSessionData();
@@ -371,7 +428,7 @@
     att.totalDurationMs += sessionDurationMs;
     att.currentSessionStart = null;
 
-    console.log(`[Meet Attendance] LEFT: ${att.name} | Stayed: ${formatDuration(sessionDurationMs)} | Total: ${formatDuration(att.totalDurationMs)}`);
+    console.log(`[Meet Attendance] LEFT: ${att.name} (${att.email}) | Stayed: ${formatDuration(sessionDurationMs)}`);
     dispatchAttendanceEvent('LEFT', att, sessionDurationMs);
   }
 
@@ -395,7 +452,7 @@
       joinCount: attendee.joinCount,
       remarks: eventType === 'JOINED' 
         ? (attendee.joinCount > 1 ? `Rejoined (Session #${attendee.joinCount})` : 'First Joined')
-        : `Left meeting after ${formatDuration(sessionDurationMs)}`
+        : (eventType === 'LEFT' ? `Left meeting after ${formatDuration(sessionDurationMs)}` : 'Email / Details Updated')
     };
 
     chrome.runtime.sendMessage({
@@ -455,9 +512,6 @@
     });
   }
 
-  /**
-   * In-Meeting Floating Widget
-   */
   function createFloatingWidget() {
     if (document.getElementById('gmat-floating-widget')) return;
 
@@ -561,7 +615,6 @@
     if (!bar || !text) return;
 
     const url = settings.webhookUrl || DEFAULT_WEBHOOK_URL;
-
     if (url && url.startsWith('https://script.google.com/')) {
       bar.classList.remove('warning');
       text.textContent = '🟢 Google Sheet Connected & Auto-syncing';
